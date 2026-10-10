@@ -25,6 +25,12 @@ import {
 
 import "./App.css";
 
+
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL ||
+  "http://127.0.0.1:8000";
+
+
 export default function App() {
   const [activePage, setActivePage] = useState("dashboard");
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -73,7 +79,7 @@ export default function App() {
     const startTime = performance.now();
 
     try {
-      const baseUrl = settings.apiBaseUrl || "http://127.0.0.1:8000";
+      const baseUrl = API_BASE_URL;
 
       const healthRes = await fetch(`${baseUrl}/health`, {
         method: "GET",
@@ -113,7 +119,7 @@ export default function App() {
   // Initial check on mount without synchronous setState in effect body
   useEffect(() => {
     let isMounted = true;
-    const baseUrl = settings.apiBaseUrl || "http://127.0.0.1:8000";
+    const baseUrl = API_BASE_URL;
     const startTime = performance.now();
 
     fetch(`${baseUrl}/health`, {
@@ -174,7 +180,7 @@ export default function App() {
       formData.append("old_file", oldFile);
       formData.append("new_file", newFile);
 
-      const baseUrl = settings.apiBaseUrl || "http://127.0.0.1:8000";
+      const baseUrl = API_BASE_URL;
       const response = await fetch(`${baseUrl}/compare`, {
         method: "POST",
         body: formData,
