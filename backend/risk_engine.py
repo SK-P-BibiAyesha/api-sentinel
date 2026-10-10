@@ -16,7 +16,7 @@ Downstream recommendations are kept separate from severity scoring.
 
 from typing import Any, Dict, Optional, TypedDict
 
-from backend.compatibility_rules import RuleResult
+from backend.compatibility_rules import CHANGE_TYPE_ALIASES, RuleResult
 
 # Canonical Severity Levels
 SEVERITY_CRITICAL = "CRITICAL"
@@ -140,7 +140,8 @@ def classify_risk(rule_result: Any) -> RiskResult:
         }
 
     # 3. Look up severity heuristic
-    rule_heuristic = SEVERITY_RULES.get(normalized_type)
+    canonical_type = CHANGE_TYPE_ALIASES.get(normalized_type, normalized_type)
+    rule_heuristic = SEVERITY_RULES.get(canonical_type)
     if rule_heuristic is not None:
         return {
             "change_type": normalized_type,

@@ -10,7 +10,7 @@ Severity calculation and recommendation generation are kept separate as independ
 
 from typing import Any, Dict, List, Optional, TypedDict
 
-from backend.compatibility_rules import RuleResult
+from backend.compatibility_rules import CHANGE_TYPE_ALIASES, RuleResult
 from backend.risk_engine import RiskResult
 
 
@@ -184,7 +184,8 @@ def generate_recommendation(change_or_result: Any) -> RecommendationResult:
         }
 
     # 5. Lookup recommendation in catalog
-    entry = RECOMMENDATIONS_CATALOG.get(normalized_type)
+    canonical_type = CHANGE_TYPE_ALIASES.get(normalized_type, normalized_type)
+    entry = RECOMMENDATIONS_CATALOG.get(canonical_type)
     if entry is not None:
         return {
             "change_type": normalized_type,

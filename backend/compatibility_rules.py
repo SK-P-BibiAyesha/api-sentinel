@@ -63,6 +63,16 @@ COMPATIBILITY_RULES: Dict[str, Dict[str, Any]] = {
 }
 
 
+# Compatibility aliases for common change type synonyms
+CHANGE_TYPE_ALIASES: Dict[str, str] = {
+    "method_removed": "http_method_removed",
+    "response_field_type_changed": "field_type_changed",
+    "request_field_type_changed": "field_type_changed",
+    "parameter_type_changed": "field_type_changed",
+    "request_field_became_required": "request_parameter_became_required",
+}
+
+
 def evaluate_compatibility_rule(change: Any) -> RuleResult:
     """
     Evaluates an API change against backward-compatibility rules.
@@ -97,7 +107,8 @@ def evaluate_compatibility_rule(change: Any) -> RuleResult:
         }
 
     normalized_type = raw_change_type.strip()
-    rule = COMPATIBILITY_RULES.get(normalized_type)
+    canonical_type = CHANGE_TYPE_ALIASES.get(normalized_type, normalized_type)
+    rule = COMPATIBILITY_RULES.get(canonical_type)
 
     if rule is not None:
         return {
