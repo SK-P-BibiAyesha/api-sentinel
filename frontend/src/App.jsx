@@ -1,58 +1,172 @@
+import { useState, useEffect, useCallback } from "react";
+import { Sidebar } from "./components/Sidebar";
+import { Header } from "./components/Header";
+import { ToastContainer } from "./components/Toast";
 
-import { useState } from "react";
-import { jsPDF } from "jspdf";
+import { DashboardPage } from "./pages/DashboardPage";
+import { WorkbenchPage } from "./pages/WorkbenchPage";
+import { BreakingChangesPage } from "./pages/BreakingChangesPage";
+import { RiskInsightsPage } from "./pages/RiskInsightsPage";
+import { RecommendationsPage } from "./pages/RecommendationsPage";
+import { HistoryPage } from "./pages/HistoryPage";
+import { ReportsPage } from "./pages/ReportsPage";
+import { BackendStatusPage } from "./pages/BackendStatusPage";
+import { SettingsPage } from "./pages/SettingsPage";
+
+import { exportReportToPdf } from "./utils/pdfExport";
+import {
+  getStoredHistory,
+  saveComparisonToHistory,
+  deleteStoredHistoryItem,
+  clearAllStoredHistory,
+  getStoredSettings,
+  saveStoredSettings,
+} from "./utils/storage";
+
 import "./App.css";
 
-const API_BASE_URL = "http://127.0.0.1:8000";
+export default function App() {
+  const [activePage, setActivePage] = useState("dashboard");
+  const [mobileOpen, setMobileOpen] = useState(false);
 
-function App() {
+  // Settings
+  const [settings, setSettings] = useState(() => getStoredSettings());
+
+  // Files & Report State
   const [oldFile, setOldFile] = useState(null);
   const [newFile, setNewFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState(null);
   const [error, setError] = useState("");
 
-  // Validate and store the selected API specification.
-  function handleFileChange(event, fileType) {
-    const file = event.target.files?.[0];
+  // History State
+  const [history, setHistory] = useState(() => getStoredHistory());
 
-    if (!file) return;
+  // Backend Health Telemetry
+  const [backendConnected, setBackendConnected] = useState(false);
+  const [checkingBackend, setCheckingBackend] = useState(false);
+  const [backendHealthData, setBackendHealthData] = useState(null);
+  const [backendRootData, setBackendRootData] = useState(null);
+  const [lastCheckedTime, setLastCheckedTime] = useState(null);
+  const [pingLatency, setPingLatency] = useState(null);
+  const [backendError, setBackendError] = useState("");
 
-    setError("");
-    setReport(null);
+  // Toast Notifications
+  const [toasts, setToasts] = useState([]);
 
-    const isJson = /\.json$/i.test(file.name);
-    const isYaml = /\.(yaml|yml)$/i.test(file.name);
+  const showToast = useCallback((type, message) => {
+    const id = Date.now() + Math.random().toString(36).slice(2, 6);
+    setToasts((prev) => [...prev, { id, type, message }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 3800);
+  }, []);
 
-    if (!isJson && !isYaml) {
-      setError("Please select an OpenAPI JSON or YAML file.");
-      event.target.value = "";
+  const dismissToast = useCallback((id) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
 
-      if (fileType === "old") {
-        setOldFile(null);
-      } else {
-        setNewFile(null);
+  // Manual Probe Backend Health (event triggered)
+  const checkBackendHealth = useCallback(async () => {
+    setCheckingBackend(true);
+    setBackendError("");
+    const startTime = performance.now();
+
+    try {
+      const baseUrl = settings.apiBaseUrl || "http://127.0.0.1:8000";
+
+      const healthRes = await fetch(`${baseUrl}/health`, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+      });
+
+      const latency = Math.round(performance.now() - startTime);
+      setPingLatency(latency);
+
+      if (!healthRes.ok) {
+        throw new Error(`Health check returned HTTP ${healthRes.status}`);
       }
 
-      return;
-    }
+      const healthData = await healthRes.json().catch(() => ({}));
+      setBackendHealthData(healthData);
 
-    if (fileType === "old") {
-      setOldFile(file);
-    } else {
-      setNewFile(file);
-    }
-  }
+      const rootRes = await fetch(`${baseUrl}/`, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+      });
+      if (rootRes.ok) {
+        const rootData = await rootRes.json().catch(() => ({}));
+        setBackendRootData(rootData);
+      }
 
-  // Send both files to the FastAPI backend.
-  async function compareApis() {
+      setBackendConnected(true);
+      setLastCheckedTime(new Date().toISOString());
+    } catch (err) {
+      setBackendConnected(false);
+      setBackendError(err.message || "Failed to reach backend.");
+      setLastCheckedTime(new Date().toISOString());
+    } finally {
+      setCheckingBackend(false);
+    }
+  }, [settings.apiBaseUrl]);
+
+  // Initial check on mount without synchronous setState in effect body
+  useEffect(() => {
+    let isMounted = true;
+    const baseUrl = settings.apiBaseUrl || "http://127.0.0.1:8000";
+    const startTime = performance.now();
+
+    fetch(`${baseUrl}/health`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    })
+      .then(async (res) => {
+        const latency = Math.round(performance.now() - startTime);
+        if (!isMounted) return;
+        setPingLatency(latency);
+        if (res.ok) {
+          const healthData = await res.json().catch(() => ({}));
+          setBackendHealthData(healthData);
+          setBackendConnected(true);
+        } else {
+          setBackendConnected(false);
+          setBackendError(`Health probe returned HTTP ${res.status}`);
+        }
+        setLastCheckedTime(new Date().toISOString());
+      })
+      .catch((err) => {
+        if (!isMounted) return;
+        setBackendConnected(false);
+        setBackendError(err.message || "Failed to reach backend.");
+        setLastCheckedTime(new Date().toISOString());
+      });
+
+    fetch(`${baseUrl}/`, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+    })
+      .then(async (res) => {
+        if (res.ok && isMounted) {
+          const rootData = await res.json().catch(() => ({}));
+          setBackendRootData(rootData);
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      isMounted = false;
+    };
+  }, [settings.apiBaseUrl]);
+
+  // Execute Comparison against POST /compare
+  async function handleCompare() {
     if (!oldFile || !newFile) {
-      setError("Please upload both old and new API specification files.");
+      setError("Please select both baseline and candidate API specifications.");
+      showToast("error", "Please upload both old and new API specification files.");
       return;
     }
 
     setError("");
-    setReport(null);
     setLoading(true);
 
     try {
@@ -60,7 +174,8 @@ function App() {
       formData.append("old_file", oldFile);
       formData.append("new_file", newFile);
 
-      const response = await fetch(`${API_BASE_URL}/compare`, {
+      const baseUrl = settings.apiBaseUrl || "http://127.0.0.1:8000";
+      const response = await fetch(`${baseUrl}/compare`, {
         method: "POST",
         body: formData,
       });
@@ -72,21 +187,20 @@ function App() {
           typeof data.detail === "string"
             ? data.detail
             : Array.isArray(data.detail)
-              ? data.detail.map((item) => item.msg).join(", ")
-              : "The backend could not compare these files.";
-
+            ? data.detail.map((item) => item.msg).join(", ")
+            : "The backend could not compare these files.";
         throw new Error(detail);
       }
 
+      // Map backend findings to normalized structure preserving all existing rules
       const findings = (data.findings || []).map((finding, index) => {
         const severity = String(finding.severity || "INFO").toUpperCase();
-
         const risk =
           severity === "BREAKING"
             ? "HIGH"
             : severity === "WARNING"
-              ? "MEDIUM"
-              : "LOW";
+            ? "MEDIUM"
+            : "LOW";
 
         return {
           id: index,
@@ -94,8 +208,7 @@ function App() {
           endpoint: finding.location || "Unknown endpoint",
           type: severity,
           risk,
-          description:
-            finding.details || "No additional details provided.",
+          description: finding.details || "No additional details provided.",
           recommendation:
             severity === "BREAKING"
               ? "Review this breaking change and update affected clients before deployment."
@@ -103,7 +216,7 @@ function App() {
         };
       });
 
-      setReport({
+      const newReport = {
         summary: {
           totalChanges: data.total_changes ?? findings.length,
           breakingChanges: data.breaking_changes ?? 0,
@@ -116,399 +229,272 @@ function App() {
         result: data.result || "UNKNOWN",
         oldVersion: data.old_version || "Unknown",
         newVersion: data.new_version || "Unknown",
-      });
+      };
+
+      setReport(newReport);
+
+      // Persist to localStorage history
+      saveComparisonToHistory(newReport);
+      setHistory(getStoredHistory());
+
+      const breakingCount = newReport.summary.breakingChanges;
+      if (breakingCount > 0) {
+        showToast("error", `Comparison completed: ${breakingCount} breaking changes detected!`);
+      } else {
+        showToast("success", "Comparison completed: API is fully backward-compatible (PASS).");
+      }
+
+      if (settings.autoNavigateToResults) {
+        // Scroll smoothly to results in workbench
+        setTimeout(() => {
+          const resultsEl = document.querySelector(".workbench-results-section");
+          if (resultsEl) {
+            resultsEl.scrollIntoView({ behavior: "smooth" });
+          }
+        }, 100);
+      }
     } catch (err) {
-      setError(
+      const msg =
         err.message ||
-          "Could not connect to the backend. Check that FastAPI is running."
-      );
+        "Could not connect to the backend. Check that FastAPI is running at " +
+          (settings.apiBaseUrl || "http://127.0.0.1:8000");
+      setError(msg);
+      showToast("error", msg);
     } finally {
       setLoading(false);
     }
   }
 
-  // Generate a downloadable PDF report.
-  function downloadReport() {
-    if (!report) return;
-
-    const doc = new jsPDF();
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
-    const margin = 18;
-    const contentWidth = pageWidth - margin * 2;
-    const footerSpace = 18;
-    let y = 20;
-
-    function ensureSpace(requiredHeight = 12) {
-      if (y + requiredHeight > pageHeight - footerSpace) {
-        doc.addPage();
-        y = 20;
-      }
+  // PDF Export
+  function handleDownloadPdf() {
+    if (!report) {
+      showToast("error", "No comparison report available to export.");
+      return;
     }
-
-    function addWrappedText(text, fontSize = 10) {
-      doc.setFontSize(fontSize);
-
-      const lines = doc.splitTextToSize(
-        String(text ?? ""),
-        contentWidth
-      );
-
-      const lineHeight = fontSize * 0.5;
-      const requiredHeight = lines.length * lineHeight + 4;
-
-      ensureSpace(requiredHeight);
-      doc.text(lines, margin, y);
-      y += requiredHeight;
+    try {
+      exportReportToPdf(report);
+      showToast("success", "Audit PDF generated and downloaded successfully.");
+    } catch (err) {
+      console.error("PDF export error:", err);
+      showToast("error", "Failed to generate PDF report.");
     }
-
-    // Report title
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(20);
-    doc.text("API Sentinel", margin, y);
-    y += 9;
-
-    doc.setFontSize(13);
-    doc.text("Backward Compatibility Analysis Report", margin, y);
-    y += 10;
-
-    doc.setFont("helvetica", "normal");
-
-    addWrappedText(`Generated: ${new Date().toLocaleString()}`);
-    addWrappedText(`Old API file: ${report.oldFileName}`);
-    addWrappedText(`New API file: ${report.newFileName}`);
-    addWrappedText(`Old API version: ${report.oldVersion}`);
-    addWrappedText(`New API version: ${report.newVersion}`);
-    addWrappedText(`Overall result: ${report.result}`);
-
-    y += 3;
-    doc.setFont("helvetica", "bold");
-    addWrappedText("EXECUTIVE SUMMARY", 13);
-
-    doc.setFont("helvetica", "normal");
-    addWrappedText(
-      `Total changes detected: ${report.summary.totalChanges}`
-    );
-    addWrappedText(
-      `Breaking changes: ${report.summary.breakingChanges}`
-    );
-    addWrappedText(`Warnings: ${report.summary.warnings}`);
-
-    y += 3;
-    doc.setFont("helvetica", "bold");
-    addWrappedText("DETAILED FINDINGS", 13);
-
-    if (report.changes.length === 0) {
-      doc.setFont("helvetica", "normal");
-      addWrappedText(
-        "No changes were detected by the implemented comparison rules."
-      );
-    }
-
-    report.changes.forEach((change, index) => {
-      y += 3;
-      ensureSpace(20);
-
-      doc.setFont("helvetica", "bold");
-      addWrappedText(`${index + 1}. ${change.title}`);
-
-      doc.setFont("helvetica", "normal");
-      addWrappedText(`Endpoint: ${change.endpoint}`);
-      addWrappedText(`Severity: ${change.type}`);
-      addWrappedText(`Risk level: ${change.risk}`);
-      addWrappedText(`Details: ${change.description}`);
-      addWrappedText(`Recommendation: ${change.recommendation}`);
-    });
-
-    y += 3;
-    doc.setFont("helvetica", "bold");
-    addWrappedText("DISCLAIMER", 11);
-
-    doc.setFont("helvetica", "normal");
-    addWrappedText(
-      "This report reflects the comparison rules implemented in API Sentinel. " +
-        "Review all findings before deployment. Changes not covered by the implemented rules may remain undetected."
-    );
-
-    // Add page numbers to all pages.
-    const totalPages = doc.internal.getNumberOfPages();
-
-    for (let page = 1; page <= totalPages; page += 1) {
-      doc.setPage(page);
-      doc.setFontSize(9);
-      doc.text(
-        `API Sentinel | Page ${page} of ${totalPages}`,
-        pageWidth / 2,
-        pageHeight - 8,
-        { align: "center" }
-      );
-    }
-
-    doc.save("api-sentinel-compatibility-report.pdf");
   }
 
-  // Download the raw comparison results as JSON.
-  function downloadJsonReport() {
-    if (!report) return;
+  // JSON Export
+  function handleDownloadJson() {
+    if (!report) {
+      showToast("error", "No comparison report available to export.");
+      return;
+    }
 
-    const blob = new Blob([JSON.stringify(report, null, 2)], {
-      type: "application/json",
-    });
-
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-
-    link.href = url;
-    link.download = "api-sentinel-compatibility-report.json";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-
-    URL.revokeObjectURL(url);
+    try {
+      const blob = new Blob([JSON.stringify(report, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `api-sentinel-report-${report.oldVersion}-to-${report.newVersion}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      showToast("success", "JSON report exported successfully.");
+    } catch (err) {
+      console.error("JSON export error:", err);
+      showToast("error", "Failed to export JSON report.");
+    }
   }
 
-  // Clear the dashboard.
-  function resetDashboard() {
+  // Reset Workspace
+  function handleResetWorkspace() {
     setOldFile(null);
     setNewFile(null);
     setReport(null);
     setError("");
+    showToast("info", "Workspace reset. Ready for new comparison.");
+  }
 
-    document.querySelectorAll('input[type="file"]').forEach((input) => {
-      input.value = "";
-    });
+  // Load a Saved History Run
+  function handleLoadHistoryItem(item) {
+    if (item?.fullReport) {
+      setReport(item.fullReport);
+      setActivePage("workbench");
+      showToast(
+        "success",
+        `Restored audit: ${item.oldFileName} vs ${item.newFileName}`
+      );
+    }
+  }
+
+  // Delete an item from History
+  function handleDeleteHistoryItem(id) {
+    const updated = deleteStoredHistoryItem(id);
+    setHistory(updated);
+    showToast("info", "Audit record removed from history.");
+  }
+
+  // Clear All History
+  function handleClearAllHistory() {
+    clearAllStoredHistory();
+    setHistory([]);
+    showToast("info", "Analysis history cleared.");
+  }
+
+  // Save Settings
+  function handleUpdateSettings(newSettings) {
+    saveStoredSettings(newSettings);
+    setSettings(newSettings);
+  }
+
+  // Purge Local Storage Cache
+  function handleClearCache() {
+    clearAllStoredHistory();
+    setHistory([]);
+    const defaultSettings = {
+      apiBaseUrl: "http://127.0.0.1:8000",
+      autoNavigateToResults: true,
+      compactFindingsView: false,
+      highlightBreakingOnly: false,
+    };
+    saveStoredSettings(defaultSettings);
+    setSettings(defaultSettings);
+    showToast("info", "Local storage purged and settings restored to default.");
   }
 
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <a className="brand" href="#" aria-label="API Sentinel home">
-          <span className="brand-icon">A</span>
-          <span>API Sentinel</span>
-        </a>
+    <div className="app-shell-root">
+      <Sidebar
+        activePage={activePage}
+        setActivePage={setActivePage}
+        report={report}
+        historyCount={history.length}
+        backendConnected={backendConnected}
+        mobileOpen={mobileOpen}
+        setMobileOpen={setMobileOpen}
+      />
 
-        <span className="demo-badge">LIVE BACKEND</span>
-      </header>
+      <div className="app-main-viewport">
+        <Header
+          activePage={activePage}
+          setActivePage={setActivePage}
+          backendConnected={backendConnected}
+          checkingBackend={checkingBackend}
+          onRefreshBackend={checkBackendHealth}
+          onOpenMobile={() => setMobileOpen(true)}
+        />
 
-      <section className="hero">
-        <p className="eyebrow">API COMPATIBILITY ANALYZER</p>
-        <h1>Find breaking API changes before deployment.</h1>
-        <p className="hero-text">
-          Compare two API specifications, identify potential risks,
-          and review recommendations before releasing your next version.
-        </p>
-      </section>
-
-      <section className="panel upload-panel">
-        <div className="section-heading">
-          <div>
-            <h2>Compare API versions</h2>
-            <p>Upload your old and new API specification files.</p>
-          </div>
-          <span className="step-label">STEP 01</span>
-        </div>
-
-        <div className="upload-grid">
-          <label className="upload-card">
-            <span className="file-icon">01</span>
-            <span className="upload-title">Old API specification</span>
-            <span className="upload-description">
-              Select your existing OpenAPI JSON or YAML file.
-            </span>
-            <span className="file-picker">
-              {oldFile ? "Change file" : "Choose API file"}
-            </span>
-            <span className="file-name">
-              {oldFile ? oldFile.name : "No file selected"}
-            </span>
-            <input
-              type="file"
-              accept=".json,.yaml,.yml,application/json"
-              onChange={(event) => handleFileChange(event, "old")}
+        <main className="app-page-content">
+          {activePage === "dashboard" && (
+            <DashboardPage
+              report={report}
+              setActivePage={setActivePage}
+              history={history}
+              backendConnected={backendConnected}
+              onDownloadPdf={handleDownloadPdf}
+              onDownloadJson={handleDownloadJson}
+              onLoadHistoryItem={handleLoadHistoryItem}
             />
-          </label>
-
-          <label className="upload-card">
-            <span className="file-icon new-icon">02</span>
-            <span className="upload-title">New API specification</span>
-            <span className="upload-description">
-              Select the updated OpenAPI JSON or YAML file.
-            </span>
-            <span className="file-picker">
-              {newFile ? "Change file" : "Choose API file"}
-            </span>
-            <span className="file-name">
-              {newFile ? newFile.name : "No file selected"}
-            </span>
-            <input
-              type="file"
-              accept=".json,.yaml,.yml,application/json"
-              onChange={(event) => handleFileChange(event, "new")}
-            />
-          </label>
-        </div>
-
-        {error && (
-          <p className="error-message" role="alert">
-            {error}
-          </p>
-        )}
-
-        <div className="action-row">
-          <button
-            className="primary-button"
-            onClick={compareApis}
-            disabled={loading}
-          >
-            {loading ? "Analyzing APIs..." : "Compare APIs →"}
-          </button>
-
-          <button
-            className="secondary-button"
-            onClick={resetDashboard}
-            disabled={loading}
-          >
-            Reset
-          </button>
-        </div>
-
-        <p className="privacy-note">
-          Selected files are sent to your local FastAPI backend for comparison.
-        </p>
-      </section>
-
-      {loading && (
-        <section className="panel loading-panel" aria-live="polite">
-          <span className="spinner large-spinner" />
-          <div>
-            <h3>Analyzing API specifications</h3>
-            <p>Sending files to the API Sentinel backend...</p>
-          </div>
-        </section>
-      )}
-
-      {report && !loading && (
-        <section className="results-section" aria-live="polite">
-          <div className="section-heading results-heading">
-            <div>
-              <p className="eyebrow">ANALYSIS RESULTS</p>
-              <h2>Comparison report</h2>
-              <p>
-                {report.oldFileName} <span className="muted">vs.</span>{" "}
-                {report.newFileName}
-              </p>
-              <p>
-                API versions: {report.oldVersion} → {report.newVersion}
-              </p>
-            </div>
-
-            <button className="primary-button" onClick={downloadReport}>
-              ↓ Download PDF
-            </button>
-          </div>
-
-          <div className="demo-notice">
-            <strong>Backend result: {report.result}</strong>
-            <span>
-              These findings were returned by your local FastAPI backend.
-            </span>
-          </div>
-
-          <div className="stats-grid">
-            <article className="stat-card">
-              <span>Total findings</span>
-              <strong>{report.summary.totalChanges}</strong>
-              <small>Detected changes</small>
-            </article>
-
-            <article className="stat-card danger-stat">
-              <span>Breaking changes</span>
-              <strong>{report.summary.breakingChanges}</strong>
-              <small>May affect existing clients</small>
-            </article>
-
-            <article className="stat-card warning-stat">
-              <span>Warnings</span>
-              <strong>{report.summary.warnings}</strong>
-              <small>Needs further review</small>
-            </article>
-          </div>
-
-          <div className="findings-header">
-            <div>
-              <h2>Detected issues</h2>
-              <p>Review each finding and its recommended action.</p>
-            </div>
-            <span className="count-badge">
-              {report.changes.length} findings
-            </span>
-          </div>
-
-          {report.changes.length === 0 ? (
-            <div className="panel">
-              No changes were detected by the current comparison rules.
-            </div>
-          ) : (
-            <div className="findings-list">
-              {report.changes.map((change) => (
-                <article
-                  className="finding-card"
-                  key={`${change.id}-${change.endpoint}`}
-                >
-                  <div className="finding-top">
-                    <span className="finding-number">
-                      {String(change.id + 1).padStart(2, "0")}
-                    </span>
-
-                    <div className="finding-title">
-                      <h3>{change.title}</h3>
-                      <code>{change.endpoint}</code>
-                    </div>
-
-                    <span
-                      className={`risk-badge ${change.risk.toLowerCase()}`}
-                    >
-                      {change.risk} RISK
-                    </span>
-                  </div>
-
-                  <p className="finding-description">
-                    {change.description}
-                  </p>
-
-                  <div className="recommendation">
-                    <strong>Recommended action</strong>
-                    <p>{change.recommendation}</p>
-                  </div>
-                </article>
-              ))}
-            </div>
           )}
 
-          <div className="report-footer">
-            <div>
-              <strong>Next step</strong>
-              <p>
-                Review the findings with your development team before
-                deployment.
-              </p>
-            </div>
+          {activePage === "workbench" && (
+            <WorkbenchPage
+              oldFile={oldFile}
+              newFile={newFile}
+              setOldFile={setOldFile}
+              setNewFile={setNewFile}
+              loading={loading}
+              error={error}
+              report={report}
+              onCompare={handleCompare}
+              onReset={handleResetWorkspace}
+              onDownloadPdf={handleDownloadPdf}
+              onDownloadJson={handleDownloadJson}
+              showToast={showToast}
+            />
+          )}
 
-            <button
-              className="secondary-button"
-              onClick={downloadJsonReport}
-            >
-              Export JSON ↓
-            </button>
+          {activePage === "breaking" && (
+            <BreakingChangesPage
+              report={report}
+              setActivePage={setActivePage}
+              onDownloadPdf={handleDownloadPdf}
+            />
+          )}
+
+          {activePage === "risk" && (
+            <RiskInsightsPage
+              report={report}
+              setActivePage={setActivePage}
+            />
+          )}
+
+          {activePage === "recommendations" && (
+            <RecommendationsPage
+              report={report}
+              setActivePage={setActivePage}
+            />
+          )}
+
+          {activePage === "history" && (
+            <HistoryPage
+              history={history}
+              onLoadHistoryItem={handleLoadHistoryItem}
+              onDeleteItem={handleDeleteHistoryItem}
+              onClearAllHistory={handleClearAllHistory}
+              setActivePage={setActivePage}
+            />
+          )}
+
+          {activePage === "reports" && (
+            <ReportsPage
+              report={report}
+              setActivePage={setActivePage}
+              onDownloadPdf={handleDownloadPdf}
+              onDownloadJson={handleDownloadJson}
+              showToast={showToast}
+            />
+          )}
+
+          {activePage === "backend" && (
+            <BackendStatusPage
+              apiBaseUrl={settings.apiBaseUrl || "http://127.0.0.1:8000"}
+              backendConnected={backendConnected}
+              checkingBackend={checkingBackend}
+              backendHealthData={backendHealthData}
+              backendRootData={backendRootData}
+              lastCheckedTime={lastCheckedTime}
+              pingLatency={pingLatency}
+              backendError={backendError}
+              onCheckBackend={checkBackendHealth}
+            />
+          )}
+
+          {activePage === "settings" && (
+            <SettingsPage
+              settings={settings}
+              onUpdateSettings={handleUpdateSettings}
+              onClearCache={handleClearCache}
+              showToast={showToast}
+            />
+          )}
+        </main>
+
+        <footer className="app-global-footer">
+          <div className="footer-left">
+            <span>API Sentinel v1.0.0</span>
+            <span className="footer-sep">·</span>
+            <span>Microservice Drift Detector & Compatibility Linter</span>
           </div>
-        </section>
-      )}
+          <div className="footer-right">
+            <span>React 19 + Vite</span>
+            <span className="footer-sep">·</span>
+            <span>FastAPI Engine</span>
+          </div>
+        </footer>
+      </div>
 
-      <footer className="footer">
-        API Sentinel · API Change Detection Dashboard · React + FastAPI
-      </footer>
-    </main>
+      <ToastContainer toasts={toasts} onDismiss={dismissToast} />
+    </div>
   );
 }
-
-export default App;
