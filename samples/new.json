@@ -1,0 +1,53 @@
+openapi: 3.0.3
+info:
+  title: Contact Details API
+  version: "2.0.0"
+
+paths:
+  /api/v1/contacts/{id}:
+    get:
+      summary: Get updated contact details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Updated contact details
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - id
+                  - full_name
+                  - email
+                  - phone
+                properties:
+                  id:
+                    type: integer
+                    example: 101
+                  full_name:
+                    type: string
+                    example: "Rahul Kumar"
+                  email:
+                    type: string
+                    format: email
+                    example: "rahul@example.com"
+                  phone:
+                    type: integer
+                    example: 9000000001
+                  age:
+                    type: string
+                    example: "24"
+                  address:
+                    type: string
+                    example: "Guntur, Andhra Pradesh"
+                  date_of_birth:
+                    type: string
+                    format: date
+                    example: "2002-05-15"
+        "404":
+          description: Contact not found
