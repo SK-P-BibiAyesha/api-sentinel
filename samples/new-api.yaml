@@ -1,0 +1,51 @@
+
+openapi: 3.0.3
+info:
+  title: Product Service API
+  version: 2.0.0
+
+paths:
+  /products:
+    get:
+      summary: Get all products
+      responses:
+        "200":
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  price:
+                    type: string
+                  category:
+                    type: string
+                  stock:
+                    type: integer
+
+  /products/{id}:
+    get:
+      summary: Get a product by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Product found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  name:
+                    type: string
+                  price:
+                    type: string
+                  
