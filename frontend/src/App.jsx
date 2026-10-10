@@ -1,46 +1,9 @@
 
 import { useState } from "react";
+import { jsPDF } from "jspdf";
 import "./App.css";
 
-const mockReport = {
-  summary: {
-    totalChanges: 3,
-    breakingChanges: 2,
-    warnings: 1,
-  },
-  changes: [
-    {
-      title: "Endpoint removed",
-      endpoint: "DELETE /api/users/{id}",
-      type: "BREAKING",
-      risk: "HIGH",
-      description:
-        "An endpoint available in the old API is missing from the new API.",
-      recommendation:
-        "Restore the endpoint or confirm that all clients have migrated.",
-    },
-    {
-      title: "Required field added",
-      endpoint: "POST /api/users",
-      type: "BREAKING",
-      risk: "HIGH",
-      description:
-        "A new required field may cause older client requests to fail.",
-      recommendation:
-        "Make the field optional or update all client applications before deployment.",
-    },
-    {
-      title: "Response field changed",
-      endpoint: "GET /api/products",
-      type: "WARNING",
-      risk: "MEDIUM",
-      description:
-        "A response field has changed and may affect clients that depend on it.",
-      recommendation:
-        "Check client usage and document the response change.",
-    },
-  ],
-};
+const API_BASE_URL = "http://127.0.0.1:8000";
 
 function App() {
   const [oldFile, setOldFile] = useState(null);
@@ -49,6 +12,7 @@ function App() {
   const [report, setReport] = useState(null);
   const [error, setError] = useState("");
 
+  // Validate and store the selected API specification.
   function handleFileChange(event, fileType) {
     const file = event.target.files?.[0];
 
@@ -57,21 +21,33 @@ function App() {
     setError("");
     setReport(null);
 
-    if (!file.name.toLowerCase().endsWith(".json")) {
-      setError("Please select a JSON file.");
+    const isJson = /\.json$/i.test(file.name);
+    const isYaml = /\.(yaml|yml)$/i.test(file.name);
+
+    if (!isJson && !isYaml) {
+      setError("Please select an OpenAPI JSON or YAML file.");
       event.target.value = "";
-      if (fileType === "old") setOldFile(null);
-      else setNewFile(null);
+
+      if (fileType === "old") {
+        setOldFile(null);
+      } else {
+        setNewFile(null);
+      }
+
       return;
     }
 
-    if (fileType === "old") setOldFile(file);
-    else setNewFile(file);
+    if (fileType === "old") {
+      setOldFile(file);
+    } else {
+      setNewFile(file);
+    }
   }
 
+  // Send both files to the FastAPI backend.
   async function compareApis() {
     if (!oldFile || !newFile) {
-      setError("Please upload both old and new API JSON files.");
+      setError("Please upload both old and new API specification files.");
       return;
     }
 
@@ -80,33 +56,199 @@ function App() {
     setLoading(true);
 
     try {
-      // Validate that both uploaded files contain valid JSON.
-      const oldText = await oldFile.text();
-      const newText = await newFile.text();
+      const formData = new FormData();
+      formData.append("old_file", oldFile);
+      formData.append("new_file", newFile);
 
-      JSON.parse(oldText);
-      JSON.parse(newText);
+      const response = await fetch(`${API_BASE_URL}/compare`, {
+        method: "POST",
+        body: formData,
+      });
 
-      // Demo mode: show mock results until the backend is connected.
-      await new Promise((resolve) => setTimeout(resolve, 900));
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const detail =
+          typeof data.detail === "string"
+            ? data.detail
+            : Array.isArray(data.detail)
+              ? data.detail.map((item) => item.msg).join(", ")
+              : "The backend could not compare these files.";
+
+        throw new Error(detail);
+      }
+
+      const findings = (data.findings || []).map((finding, index) => {
+        const severity = String(finding.severity || "INFO").toUpperCase();
+
+        const risk =
+          severity === "BREAKING"
+            ? "HIGH"
+            : severity === "WARNING"
+              ? "MEDIUM"
+              : "LOW";
+
+        return {
+          id: index,
+          title: finding.change || "API change detected",
+          endpoint: finding.location || "Unknown endpoint",
+          type: severity,
+          risk,
+          description:
+            finding.details || "No additional details provided.",
+          recommendation:
+            severity === "BREAKING"
+              ? "Review this breaking change and update affected clients before deployment."
+              : "Review this change and verify whether client updates are required.",
+        };
+      });
 
       setReport({
-        ...mockReport,
+        summary: {
+          totalChanges: data.total_changes ?? findings.length,
+          breakingChanges: data.breaking_changes ?? 0,
+          warnings: data.warnings ?? 0,
+        },
+        changes: findings,
         oldFileName: oldFile.name,
         newFileName: newFile.name,
         generatedAt: new Date().toISOString(),
-        mode: "DEMO - MOCK RESULTS",
+        result: data.result || "UNKNOWN",
+        oldVersion: data.old_version || "Unknown",
+        newVersion: data.new_version || "Unknown",
       });
-    } catch {
+    } catch (err) {
       setError(
-        "One of the files contains invalid JSON. Please check both files and try again."
+        err.message ||
+          "Could not connect to the backend. Check that FastAPI is running."
       );
     } finally {
       setLoading(false);
     }
   }
 
+  // Generate a downloadable PDF report.
   function downloadReport() {
+    if (!report) return;
+
+    const doc = new jsPDF();
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const margin = 18;
+    const contentWidth = pageWidth - margin * 2;
+    const footerSpace = 18;
+    let y = 20;
+
+    function ensureSpace(requiredHeight = 12) {
+      if (y + requiredHeight > pageHeight - footerSpace) {
+        doc.addPage();
+        y = 20;
+      }
+    }
+
+    function addWrappedText(text, fontSize = 10) {
+      doc.setFontSize(fontSize);
+
+      const lines = doc.splitTextToSize(
+        String(text ?? ""),
+        contentWidth
+      );
+
+      const lineHeight = fontSize * 0.5;
+      const requiredHeight = lines.length * lineHeight + 4;
+
+      ensureSpace(requiredHeight);
+      doc.text(lines, margin, y);
+      y += requiredHeight;
+    }
+
+    // Report title
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(20);
+    doc.text("API Sentinel", margin, y);
+    y += 9;
+
+    doc.setFontSize(13);
+    doc.text("Backward Compatibility Analysis Report", margin, y);
+    y += 10;
+
+    doc.setFont("helvetica", "normal");
+
+    addWrappedText(`Generated: ${new Date().toLocaleString()}`);
+    addWrappedText(`Old API file: ${report.oldFileName}`);
+    addWrappedText(`New API file: ${report.newFileName}`);
+    addWrappedText(`Old API version: ${report.oldVersion}`);
+    addWrappedText(`New API version: ${report.newVersion}`);
+    addWrappedText(`Overall result: ${report.result}`);
+
+    y += 3;
+    doc.setFont("helvetica", "bold");
+    addWrappedText("EXECUTIVE SUMMARY", 13);
+
+    doc.setFont("helvetica", "normal");
+    addWrappedText(
+      `Total changes detected: ${report.summary.totalChanges}`
+    );
+    addWrappedText(
+      `Breaking changes: ${report.summary.breakingChanges}`
+    );
+    addWrappedText(`Warnings: ${report.summary.warnings}`);
+
+    y += 3;
+    doc.setFont("helvetica", "bold");
+    addWrappedText("DETAILED FINDINGS", 13);
+
+    if (report.changes.length === 0) {
+      doc.setFont("helvetica", "normal");
+      addWrappedText(
+        "No changes were detected by the implemented comparison rules."
+      );
+    }
+
+    report.changes.forEach((change, index) => {
+      y += 3;
+      ensureSpace(20);
+
+      doc.setFont("helvetica", "bold");
+      addWrappedText(`${index + 1}. ${change.title}`);
+
+      doc.setFont("helvetica", "normal");
+      addWrappedText(`Endpoint: ${change.endpoint}`);
+      addWrappedText(`Severity: ${change.type}`);
+      addWrappedText(`Risk level: ${change.risk}`);
+      addWrappedText(`Details: ${change.description}`);
+      addWrappedText(`Recommendation: ${change.recommendation}`);
+    });
+
+    y += 3;
+    doc.setFont("helvetica", "bold");
+    addWrappedText("DISCLAIMER", 11);
+
+    doc.setFont("helvetica", "normal");
+    addWrappedText(
+      "This report reflects the comparison rules implemented in API Sentinel. " +
+        "Review all findings before deployment. Changes not covered by the implemented rules may remain undetected."
+    );
+
+    // Add page numbers to all pages.
+    const totalPages = doc.internal.getNumberOfPages();
+
+    for (let page = 1; page <= totalPages; page += 1) {
+      doc.setPage(page);
+      doc.setFontSize(9);
+      doc.text(
+        `API Sentinel | Page ${page} of ${totalPages}`,
+        pageWidth / 2,
+        pageHeight - 8,
+        { align: "center" }
+      );
+    }
+
+    doc.save("api-sentinel-compatibility-report.pdf");
+  }
+
+  // Download the raw comparison results as JSON.
+  function downloadJsonReport() {
     if (!report) return;
 
     const blob = new Blob([JSON.stringify(report, null, 2)], {
@@ -117,18 +259,20 @@ function App() {
     const link = document.createElement("a");
 
     link.href = url;
-    link.download = "api-comparison-report.json";
+    link.download = "api-sentinel-compatibility-report.json";
+    document.body.appendChild(link);
     link.click();
+    link.remove();
 
     URL.revokeObjectURL(url);
   }
 
+  // Clear the dashboard.
   function resetDashboard() {
     setOldFile(null);
     setNewFile(null);
     setReport(null);
     setError("");
-    setLoading(false);
 
     document.querySelectorAll('input[type="file"]').forEach((input) => {
       input.value = "";
@@ -138,12 +282,12 @@ function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <a className="brand" href="#" aria-label="API Guard home">
+        <a className="brand" href="#" aria-label="API Sentinel home">
           <span className="brand-icon">A</span>
-          <span>API Guard</span>
+          <span>API Sentinel</span>
         </a>
 
-        <span className="demo-badge">FRONTEND DEMO</span>
+        <span className="demo-badge">LIVE BACKEND</span>
       </header>
 
       <section className="hero">
@@ -169,17 +313,17 @@ function App() {
             <span className="file-icon">01</span>
             <span className="upload-title">Old API specification</span>
             <span className="upload-description">
-              Select your existing API JSON file.
+              Select your existing OpenAPI JSON or YAML file.
             </span>
             <span className="file-picker">
-              {oldFile ? "Change file" : "Choose JSON file"}
+              {oldFile ? "Change file" : "Choose API file"}
             </span>
             <span className="file-name">
               {oldFile ? oldFile.name : "No file selected"}
             </span>
             <input
               type="file"
-              accept=".json,application/json"
+              accept=".json,.yaml,.yml,application/json"
               onChange={(event) => handleFileChange(event, "old")}
             />
           </label>
@@ -188,23 +332,27 @@ function App() {
             <span className="file-icon new-icon">02</span>
             <span className="upload-title">New API specification</span>
             <span className="upload-description">
-              Select the updated API JSON file.
+              Select the updated OpenAPI JSON or YAML file.
             </span>
             <span className="file-picker">
-              {newFile ? "Change file" : "Choose JSON file"}
+              {newFile ? "Change file" : "Choose API file"}
             </span>
             <span className="file-name">
               {newFile ? newFile.name : "No file selected"}
             </span>
             <input
               type="file"
-              accept=".json,application/json"
+              accept=".json,.yaml,.yml,application/json"
               onChange={(event) => handleFileChange(event, "new")}
             />
           </label>
         </div>
 
-        {error && <p className="error-message">{error}</p>}
+        {error && (
+          <p className="error-message" role="alert">
+            {error}
+          </p>
+        )}
 
         <div className="action-row">
           <button
@@ -212,14 +360,7 @@ function App() {
             onClick={compareApis}
             disabled={loading}
           >
-            {loading ? (
-              <>
-                <span className="spinner" />
-                Analyzing APIs...
-              </>
-            ) : (
-              "Compare APIs →"
-            )}
+            {loading ? "Analyzing APIs..." : "Compare APIs →"}
           </button>
 
           <button
@@ -232,7 +373,7 @@ function App() {
         </div>
 
         <p className="privacy-note">
-          Files are read locally in your browser in this demo.
+          Selected files are sent to your local FastAPI backend for comparison.
         </p>
       </section>
 
@@ -241,7 +382,7 @@ function App() {
           <span className="spinner large-spinner" />
           <div>
             <h3>Analyzing API specifications</h3>
-            <p>Validating files and preparing the demo report...</p>
+            <p>Sending files to the API Sentinel backend...</p>
           </div>
         </section>
       )}
@@ -256,18 +397,20 @@ function App() {
                 {report.oldFileName} <span className="muted">vs.</span>{" "}
                 {report.newFileName}
               </p>
+              <p>
+                API versions: {report.oldVersion} → {report.newVersion}
+              </p>
             </div>
 
             <button className="primary-button" onClick={downloadReport}>
-              ↓ Download report
+              ↓ Download PDF
             </button>
           </div>
 
           <div className="demo-notice">
-            <strong>Demo results</strong>
+            <strong>Backend result: {report.result}</strong>
             <span>
-              These are sample findings, not findings calculated from your
-              uploaded API specifications.
+              These findings were returned by your local FastAPI backend.
             </span>
           </div>
 
@@ -275,7 +418,7 @@ function App() {
             <article className="stat-card">
               <span>Total findings</span>
               <strong>{report.summary.totalChanges}</strong>
-              <small>Potential changes</small>
+              <small>Detected changes</small>
             </article>
 
             <article className="stat-card danger-stat">
@@ -301,43 +444,60 @@ function App() {
             </span>
           </div>
 
-          <div className="findings-list">
-            {report.changes.map((change, index) => (
-              <article className="finding-card" key={change.endpoint}>
-                <div className="finding-top">
-                  <span className="finding-number">
-                    {String(index + 1).padStart(2, "0")}
-                  </span>
-                  <div className="finding-title">
-                    <h3>{change.title}</h3>
-                    <code>{change.endpoint}</code>
+          {report.changes.length === 0 ? (
+            <div className="panel">
+              No changes were detected by the current comparison rules.
+            </div>
+          ) : (
+            <div className="findings-list">
+              {report.changes.map((change) => (
+                <article
+                  className="finding-card"
+                  key={`${change.id}-${change.endpoint}`}
+                >
+                  <div className="finding-top">
+                    <span className="finding-number">
+                      {String(change.id + 1).padStart(2, "0")}
+                    </span>
+
+                    <div className="finding-title">
+                      <h3>{change.title}</h3>
+                      <code>{change.endpoint}</code>
+                    </div>
+
+                    <span
+                      className={`risk-badge ${change.risk.toLowerCase()}`}
+                    >
+                      {change.risk} RISK
+                    </span>
                   </div>
-                  <span
-                    className={`risk-badge ${change.risk.toLowerCase()}`}
-                  >
-                    {change.risk} RISK
-                  </span>
-                </div>
 
-                <p className="finding-description">{change.description}</p>
+                  <p className="finding-description">
+                    {change.description}
+                  </p>
 
-                <div className="recommendation">
-                  <strong>Recommended action</strong>
-                  <p>{change.recommendation}</p>
-                </div>
-              </article>
-            ))}
-          </div>
+                  <div className="recommendation">
+                    <strong>Recommended action</strong>
+                    <p>{change.recommendation}</p>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
 
           <div className="report-footer">
             <div>
               <strong>Next step</strong>
               <p>
-                Review all findings with your development team before
+                Review the findings with your development team before
                 deployment.
               </p>
             </div>
-            <button className="secondary-button" onClick={downloadReport}>
+
+            <button
+              className="secondary-button"
+              onClick={downloadJsonReport}
+            >
               Export JSON ↓
             </button>
           </div>
@@ -345,7 +505,7 @@ function App() {
       )}
 
       <footer className="footer">
-        API Guard · API Change Detection Dashboard · React + Vite
+        API Sentinel · API Change Detection Dashboard · React + FastAPI
       </footer>
     </main>
   );
